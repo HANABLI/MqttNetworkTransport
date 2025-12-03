@@ -7,11 +7,11 @@ cmake_minimum_required(VERSION 3.8)
 set(this MqttNetworkTransport )
 
 set(Headers
-    include/MqttNetworkTransport/MqttNetworkTransport.hpp
+    include/MqttNetworkTransport/MqttClientNetworkTransport.hpp
 )
 
 set(Sources
-    src/MqttNetworkTransport.cpp
+    src/MqttClientNetworkTransport.cpp
 )
 
 add_library(${this} STATIC ${Sources} ${Headers})
@@ -20,5 +20,11 @@ set_target_properties(${this} PROPERTIES
 )
 
 target_include_directories(${this} PUBLIC include)
+
+target_link_libraries(${this} PUBLIC
+    SystemUtils
+    StringUtils
+    MqttV5
+)
 
 add_subdirectory(test)

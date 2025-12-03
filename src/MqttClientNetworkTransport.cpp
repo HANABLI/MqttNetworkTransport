@@ -7,7 +7,7 @@
  * © 2025 by Hatem Nabli
  */
 
-#include "MqttClientNetworkTransport.hpp"
+#include "MqttNetworkTransport/MqttClientNetworkTransport.hpp"
 #include <mutex>
 
 namespace
@@ -175,7 +175,7 @@ namespace MqttNetworkTransport
                     MqttV5::Connection::BrokenDelegate brokenDelegate;
                     {
                         std::lock_guard<decltype(delegatesCopy->mutex)> lock(delegatesCopy->mutex);
-                        brockenDelegate = delegatesCopy->brokenDelegate;
+                        brokenDelegate = delegatesCopy->brokenDelegate;
                     }
                     if (brokenDelegate != nullptr)
                     { brokenDelegate(graceful); }

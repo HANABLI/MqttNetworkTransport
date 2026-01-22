@@ -17,6 +17,12 @@
 #include <StringUtils/StringUtils.hpp>
 namespace MqttNetworkTransport
 {
+    /**
+     * This class implements the MqttV5::ClientTransportLayer interface
+     * in terms of SystemUtils::NetworkConnection, establishing a TCP
+     * connection to a remote MQTT broker and keeping it open while the
+     * client is running.
+     */
     class MqttClientNetworkTransport : public MqttV5::ClientTransportLayer
     {
     public:
@@ -36,7 +42,7 @@ namespace MqttNetworkTransport
             const std::string& scheme, const std::string& serverName)>
             ConnectionFactoryFunction;
 
-        // Lifecycle management
+        // LifeCycle management
     public:
         ~MqttClientNetworkTransport() noexcept;
         MqttClientNetworkTransport(const MqttClientNetworkTransport&) = delete;
@@ -44,7 +50,6 @@ namespace MqttNetworkTransport
         MqttClientNetworkTransport& operator=(const MqttClientNetworkTransport&) = delete;
         MqttClientNetworkTransport& operator=(MqttClientNetworkTransport&&) noexcept = delete;
 
-        // Public methods
     public:
         /**
          * This is the default constructor.
@@ -75,18 +80,10 @@ namespace MqttNetworkTransport
             MqttV5::Connection::BrokenDelegate brokenDelegate) override;
         // Private properties
     private:
-        /**
-         * This is the type of structure that contains the private properties of the instatnce. It
-         * is defined in the implementation and declared here to ensure that it is scoped inside the
-         * class.
-         */
         struct Impl;
-
-        /**
-         * This contains the private properties of the instance.
-         */
         std::unique_ptr<Impl> impl_;
     };
+
 }  // namespace MqttNetworkTransport
 
 #endif /** MQTT_CLIENT_NETWORK_TRANSPORT_HPP */

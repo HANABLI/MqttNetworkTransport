@@ -1,80 +1,80 @@
 /**
- * @file MqttClientNetworkTransport.hpp
+ * @file MqttClientNetworkTransport.cpp
  *
  * This module implements the MqttClientNetworkTransport::MqttClientNetworkTransport
- * class
+ * class as a TCP client endpoint that keeps the connection open.
  *
  * © 2025 by Hatem Nabli
  */
 
 #include "MqttNetworkTransport/MqttClientNetworkTransport.hpp"
+#include <SystemUtils/NetworkConnection.hpp>
+#include <SystemUtils/DiagnosticsSender.hpp>
+#include <StringUtils/StringUtils.hpp>
 #include <mutex>
 
 namespace
 {
     struct ConnectionDelegates
     {
-        /**
-         * This is used to synchronize access to the delegates.
-         */
         std::recursive_mutex mutex;
-
-        /**
-         * This is the delegate to call whenever data is received
-         * from the remote peer.
-         */
         MqttV5::Connection::DataReceivedDelegate dataReceivedDelegate;
-
-        /**
-         * This is the delegate to call whenever the connection has
-         * been broken.
-         */
         MqttV5::Connection::BrokenDelegate brokenDelegate;
     };
 
     struct ConnectionAdapter : public MqttV5::Connection
     {
-        /**
-         * This is the object wish implementing the network connection
-         * in terms of the operating system's network API.
-         */
-        std::shared_ptr<SystemUtils::INetworkConnection> networkConnectionadaptee;
+        std::shared_ptr<SystemUtils::INetworkConnection> networkConnection;
+        std::shared_ptr<ConnectionDelegates> delegates = std::make_shared<ConnectionDelegates>();
 
-        /**
-         * This holds onto the user's delegate and makes their setting
-         * and usage thread-safe.
-         */
-        std::shared_ptr<ConnectionDelegates> connectionDelegates =
-            std::make_shared<ConnectionDelegates>();
+        bool WireUp() {
+            // Lance la boucle de traitement réseau (lecture/écriture) en tâche de fond.
+            return networkConnection->Process(
+                [delegates = delegates](const std::vector<uint8_t>& message)
+                {
+                    std::lock_guard<std::recursive_mutex> lock(delegates->mutex);
+                    if (delegates->dataReceivedDelegate)
+                    { delegates->dataReceivedDelegate(message); }
+                },
+                [delegates = delegates](bool graceful)
+                {
+                    std::lock_guard<std::recursive_mutex> lock(delegates->mutex);
+                    if (delegates->brokenDelegate)
+                    { delegates->brokenDelegate(graceful); }
+                });
+        }
 
-        // Mqtt::Connection Methods
+        // ========== MqttV5::Connection interface ==========
 
         virtual std::string GetPeerId() override {
-            return StringUtils::sprintf(
-                "%" PRIu8 ".%" PRIu8 ".%" PRIu8 ":%" PRIu16,
-                (uint8_t)((networkConnectionadaptee->GetPeerAddress() >> 24) & 0xFF),
-                (uint8_t)((networkConnectionadaptee->GetPeerAddress() >> 16) & 0xFF),
-                (uint8_t)((networkConnectionadaptee->GetPeerAddress() >> 8) & 0xFF),
-                (uint8_t)(networkConnectionadaptee->GetPeerAddress() & 0xFF),
-                networkConnectionadaptee->GetPeerPort());
+            const uint32_t addr = networkConnection->GetPeerAddress();
+            const uint16_t port = networkConnection->GetPeerPort();
+
+            const uint8_t a = static_cast<uint8_t>((addr >> 24) & 0xFF);
+            const uint8_t b = static_cast<uint8_t>((addr >> 16) & 0xFF);
+            const uint8_t c = static_cast<uint8_t>((addr >> 8) & 0xFF);
+            const uint8_t d = static_cast<uint8_t>(addr & 0xFF);
+
+            return StringUtils::sprintf("%" PRIu8 ".%" PRIu8 ".%" PRIu8 ".%" PRIu8 ":%" PRIu16, a,
+                                        b, c, d, port);
         }
 
         virtual void SetDataReceivedDelegate(
             DataReceivedDelegate newDataReceivedDelegate) override {
-            std::lock_guard<decltype(connectionDelegates->mutex)> lock(connectionDelegates->mutex);
-            connectionDelegates->dataReceivedDelegate = newDataReceivedDelegate;
+            std::lock_guard<std::recursive_mutex> lock(delegates->mutex);
+            delegates->dataReceivedDelegate = newDataReceivedDelegate;
         }
 
-        virtual void SetConnectionBrokenDelegate(BrokenDelegate brokenDelegate) override {
-            std::lock_guard<decltype(connectionDelegates->mutex)> lock(connectionDelegates->mutex);
-            connectionDelegates->brokenDelegate = brokenDelegate;
+        virtual void SetConnectionBrokenDelegate(BrokenDelegate newBrokenDelegate) override {
+            std::lock_guard<std::recursive_mutex> lock(delegates->mutex);
+            delegates->brokenDelegate = newBrokenDelegate;
         }
 
         virtual void SendData(const std::vector<uint8_t>& data) override {
-            networkConnectionadaptee->SendMessage(data);
+            networkConnection->SendMessage(data);
         }
 
-        virtual void Break(const bool clean) override { networkConnectionadaptee->Close(clean); }
+        virtual void Break(const bool clean) override { networkConnection->Close(clean); }
     };
 }  // namespace
 
@@ -82,19 +82,9 @@ namespace MqttNetworkTransport
 {
     struct MqttClientNetworkTransport::Impl
     {
-        /**
-         * This is a helper object used to generate and publish diagnostics messages.
-         */
         std::shared_ptr<SystemUtils::DiagnosticsSender> diagnosticsSender;
 
-        /**
-         * This function is used to create a new connection.
-         */
         ConnectionFactoryFunction connectionFactory;
-
-        /**
-         * This is the constructor for the structure.
-         */
 
         Impl() :
             diagnosticsSender(
@@ -116,30 +106,30 @@ namespace MqttNetworkTransport
         return impl_->diagnosticsSender->SubscribeToDiagnostics(delegate, minLevel);
     }
 
-    // void MqttClientNetworkTransport::SetConnectionFactory(
-    //     ConnectionFactoryFunction connectionFactory) {
-    //     impl_->connectionFactory = connectionFactory;
-    // }
-
     std::shared_ptr<MqttV5::Connection> MqttClientNetworkTransport::Connect(
         const std::string& scheme, const std::string& hostNameOrAdrress, uint16_t port,
         MqttV5::Connection::DataReceivedDelegate dataReceivedDelegate,
         MqttV5::Connection::BrokenDelegate brokenDelegate) {
+        (void)scheme;  // pour futur support "mqtts" / TLS
+
         const auto adapter = std::make_shared<ConnectionAdapter>();
         const auto peerId = StringUtils::sprintf("%s:%" PRIu16, hostNameOrAdrress.c_str(), port);
-        adapter->networkConnectionadaptee = impl_->connectionFactory(scheme, hostNameOrAdrress);
-        if (adapter->networkConnectionadaptee == nullptr)
+
+        adapter->networkConnection = impl_->connectionFactory(scheme, hostNameOrAdrress);
+        if (adapter->networkConnection == nullptr)
         {
             impl_->diagnosticsSender->SendDiagnosticInformationFormatted(
                 SystemUtils::DiagnosticsSender::Levels::ERROR,
-                "Unabale to create connection to '%s'", peerId.c_str());
+                "Unable to create connection to '%s'", peerId.c_str());
             return nullptr;
         }
+
         auto diagnosticsSender = impl_->diagnosticsSender;
-        adapter->networkConnectionadaptee->SubscribeToDiagnostics(
+        adapter->networkConnection->SubscribeToDiagnostics(
             [diagnosticsSender, peerId](std::string senderName, size_t level, std::string message)
             { diagnosticsSender->SendDiagnosticInformationString(level, peerId + ": " + message); },
             1);
+
         const uint32_t address =
             SystemUtils::NetworkConnection::GetAddressOfHost(hostNameOrAdrress);
         if (address == 0)
@@ -149,44 +139,28 @@ namespace MqttNetworkTransport
                 "There is no address to get from '%s'", hostNameOrAdrress.c_str());
             return nullptr;
         }
-        if (!adapter->networkConnectionadaptee->Connect(address, port))
+
+        if (!adapter->networkConnection->Connect(address, port))
         {
             impl_->diagnosticsSender->SendDiagnosticInformationFormatted(
                 SystemUtils::DiagnosticsSender::Levels::ERROR, "Unable to connect to '%s'",
                 peerId.c_str());
             return nullptr;
         }
-        adapter->connectionDelegates->dataReceivedDelegate = dataReceivedDelegate;
-        adapter->connectionDelegates->brokenDelegate = brokenDelegate;
-        const auto delegatesCopy = adapter->connectionDelegates;
-        if (!adapter->networkConnectionadaptee->Process(
-                [delegatesCopy](const std::vector<uint8_t>& message)
-                {
-                    MqttV5::Connection::DataReceivedDelegate dataReceivedDelegate;
-                    {
-                        std::lock_guard<decltype(delegatesCopy->mutex)> lock(delegatesCopy->mutex);
-                        dataReceivedDelegate = delegatesCopy->dataReceivedDelegate;
-                    }
-                    if (dataReceivedDelegate != nullptr)
-                    { dataReceivedDelegate(message); }
-                },
-                [delegatesCopy](bool graceful)
-                {
-                    MqttV5::Connection::BrokenDelegate brokenDelegate;
-                    {
-                        std::lock_guard<decltype(delegatesCopy->mutex)> lock(delegatesCopy->mutex);
-                        brokenDelegate = delegatesCopy->brokenDelegate;
-                    }
-                    if (brokenDelegate != nullptr)
-                    { brokenDelegate(graceful); }
-                }))
+
+        // Initialise les delegates avant de lancer la boucle Process()
+        adapter->delegates->dataReceivedDelegate = dataReceivedDelegate;
+        adapter->delegates->brokenDelegate = brokenDelegate;
+
+        if (!adapter->WireUp())
         {
-            impl_->diagnosticsSender->SendDiagnosticInformationString(
+            impl_->diagnosticsSender->SendDiagnosticInformationFormatted(
                 SystemUtils::DiagnosticsSender::Levels::ERROR,
-                " Error to start to process listening for incoming and sending outgoing "
-                "messages. ");
+                "Failed to start processing on connection to '%s'", peerId.c_str());
+            adapter->networkConnection->Close(false);
             return nullptr;
         }
+
         return adapter;
     }
 }  // namespace MqttNetworkTransport

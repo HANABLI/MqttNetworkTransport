@@ -29,7 +29,7 @@ namespace
 
         bool WireUp() {
             // Lance la boucle de traitement réseau (lecture/écriture) en tâche de fond.
-            return networkConnection->Process(
+            return networkConnection->DoWork(
                 [delegates = delegates](const std::vector<uint8_t>& message)
                 {
                     std::lock_guard<std::recursive_mutex> lock(delegates->mutex);
